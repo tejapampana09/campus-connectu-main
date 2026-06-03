@@ -30,3 +30,12 @@ dist-ssr
 
 # Firebase
 .firebase/
+
+# Build caches, temp files, and test coverage
+.cache/
+.parcel-cache/
+.vite/
+build/
+coverage/
+.turbo/
+.pnpm-store/

@@ -152,7 +152,7 @@ const ChatScreen = () => {
       unsubsRef.current.forEach((u) => u());
       unsubsRef.current = [];
     };
-  }, [userId]);
+  }, []);
 
   const cleanup = () => {
     unsubsRef.current.forEach((u) => u());
@@ -235,8 +235,14 @@ const ChatScreen = () => {
       const peer = candidates[0]; // Choose the oldest waiting peer
 
       try {
-        const chatRef = doc(collection(db, "chats"));
+        const chatId = [userId, peer.uid].sort().join('_');
+        const chatRef = doc(db, "chats", chatId);
         await runTransaction(db, async (tx) => {
+          const existing = await tx.get(chatRef);
+          if (existing.exists()) {
+            throw new Error("already-matched");
+          }
+
           const myQueueSnap = await tx.get(myQueueRef);
           const peerQueueSnap = await tx.get(peer.ref);
           const myUserSnap = await tx.get(doc(db, "users", userId));

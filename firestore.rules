@@ -32,7 +32,7 @@ service cloud.firestore {
 
     // ---------- queue ----------
     match /queue/{queueId} {
-      allow read: if isSrmap();
+      allow read: if isSrmap() && request.auth.uid == queueId;
       allow create: if isSrmap() && request.resource.data.userId == request.auth.uid;
       allow delete: if isSrmap() && resource.data.userId == request.auth.uid;
       allow update: if isSrmap() && (
@@ -174,7 +174,7 @@ service cloud.firestore {
       // Seed + join/leave: any signed-in srmap user can create/update.
       // Members array is the only mutable field for non-seeders.
       allow create: if isSrmap();
-      allow update: if isSrmap();
+      allow update: if isSrmap() && request.auth.uid in resource.data.members;
       allow delete: if false;
 
       match /messages/{messageId} {

@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
-import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, serverTimestamp, updateDoc } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
+import { Plus, Search, MessageSquare, CheckCircle2, Trash2, X, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { motion } from "framer-motion";
-import { Plus, Search, Mail, CheckCircle2, Trash2, X } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import type { LostFoundItem } from "@/types";
@@ -17,6 +18,8 @@ const LostFound = () => {
   const [items, setItems] = useState<LostFoundItem[]>([]);
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | "lost" | "found">("all");
+  const [refreshing, setRefreshing] = useState(false);
+  const navigate = useNavigate();
 
   const [type, setType] = useState<"lost" | "found">("lost");
   const [title, setTitle] = useState("");
@@ -45,6 +48,41 @@ const LostFound = () => {
   const remove = (id: string) => deleteDoc(doc(db, "lostFound", id));
 
   const filtered = items.filter((i) => filter === "all" || i.type === filter);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const q = query(collection(db, "lostFound"), orderBy("createdAt", "desc"));
+      const snap = await getDocs(q);
+      setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() } as LostFoundItem)));
+    } catch (e) {
+      // silent
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const openChatWith = async (peerId: string) => {
+    if (!uid || !peerId) return;
+    const ids = [uid, peerId].sort();
+    const chatId = `direct_${ids[0]}_${ids[1]}`;
+    const chatRef = doc(db, "chats", chatId);
+    try {
+      const snap = await getDoc(chatRef);
+      if (!snap.exists()) {
+        await setDoc(chatRef, {
+          users: [uid, peerId],
+          typing: { [uid]: false, [peerId]: false },
+          createdAt: serverTimestamp(),
+          ended: false,
+        });
+      }
+      await setDoc(doc(db, "users", uid), { status: "chatting", chatId }, { merge: true });
+      navigate("/connect");
+    } catch (e) {
+      // ignore
+    }
+  };
 
   return (
     <div className="max-w-6xl mx-auto p-4 md:p-8">
@@ -79,13 +117,16 @@ const LostFound = () => {
         </motion.div>
       )}
 
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-2 mb-4 items-center">
         {(["all", "lost", "found"] as const).map((f) => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-4 py-1.5 rounded-full text-xs font-medium capitalize ${
               filter === f ? "gradient-brand text-white" : "glass text-muted-foreground"
             }`}>{f}</button>
         ))}
+        <Button onClick={refresh} disabled={refreshing} className="ml-auto rounded-full glass text-sm">
+          <RefreshCw className="h-4 w-4 mr-1" /> {refreshing ? "Refreshing..." : "Reload"}
+        </Button>
       </div>
 
       {filtered.length === 0 ? (
@@ -106,9 +147,9 @@ const LostFound = () => {
               <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{it.description}</p>
               <p className="text-xs text-muted-foreground mt-2">📍 {it.location}</p>
               <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/30">
-                <a href={`mailto:${it.ownerEmail}`} className="text-xs text-primary flex items-center gap-1">
-                  <Mail className="h-3 w-3" /> Contact
-                </a>
+                <button onClick={() => openChatWith(it.ownerId)} className="text-xs text-primary flex items-center gap-1">
+                  <MessageSquare className="h-3 w-3" /> Chat
+                </button>
                 {it.ownerId === uid && (
                   <div className="flex gap-2">
                     {it.status === "open" && (

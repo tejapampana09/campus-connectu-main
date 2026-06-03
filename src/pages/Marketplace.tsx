@@ -2,13 +2,14 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import {
-  collection, addDoc, deleteDoc, doc, onSnapshot, orderBy, query, serverTimestamp,
+  collection, addDoc, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, serverTimestamp, setDoc,
 } from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
+import { Plus, ShoppingBag, Trash2, MessageSquare, X, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { motion } from "framer-motion";
-import { Plus, ShoppingBag, Trash2, Mail, X } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { MarketplaceSkeleton } from "@/components/skeletons/MarketplaceSkeleton";
@@ -29,6 +30,8 @@ const Marketplace = () => {
   const [filter, setFilter] = useState<"all" | MarketplaceItem["category"]>("all");
   const [search, setSearch] = useState("");
   const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const navigate = useNavigate();
 
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
@@ -103,6 +106,41 @@ const Marketplace = () => {
     .filter((i) => filter === "all" || i.category === filter)
     .filter((i) => !search || i.title.toLowerCase().includes(search.toLowerCase()));
 
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const q = query(collection(db, "marketplace"), orderBy("createdAt", "desc"));
+      const snap = await getDocs(q);
+      setItems(snap.docs.map((d) => ({ id: d.id, ...d.data() } as MarketplaceItem)));
+    } catch (e) {
+      // silent
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const openChatWith = async (peerId: string) => {
+    if (!uid || !peerId) return;
+    const ids = [uid, peerId].sort();
+    const chatId = `direct_${ids[0]}_${ids[1]}`;
+    const chatRef = doc(db, "chats", chatId);
+    try {
+      const snap = await getDoc(chatRef);
+      if (!snap.exists()) {
+        await setDoc(chatRef, {
+          users: [uid, peerId],
+          typing: { [uid]: false, [peerId]: false },
+          createdAt: serverTimestamp(),
+          ended: false,
+        });
+      }
+      await setDoc(doc(db, "users", uid), { status: "chatting", chatId }, { merge: true });
+      navigate("/connect");
+    } catch (e) {
+      // ignore
+    }
+  };
+
   if (initialLoading && initialLoadRef.current) {
     return <MarketplaceSkeleton />;
   }
@@ -142,7 +180,7 @@ const Marketplace = () => {
         </motion.div>
       )}
 
-      <div className="flex flex-wrap gap-2 mb-4">
+      <div className="flex flex-wrap gap-2 mb-4 items-center">
         <Input placeholder="Search listings..." value={search} onChange={(e) => setSearch(e.target.value)}
           className="flex-1 min-w-[200px] bg-secondary/40 border-border/50 rounded-full" />
         <div className="flex gap-1.5 flex-wrap">
@@ -153,6 +191,9 @@ const Marketplace = () => {
               }`}>{c}</button>
           ))}
         </div>
+        <Button onClick={refresh} disabled={refreshing} className="ml-2 rounded-full glass text-sm">
+          <RefreshCw className="h-4 w-4 mr-1" /> {refreshing ? "Refreshing..." : "Reload"}
+        </Button>
       </div>
 
       {filtered.length === 0 ? (
@@ -178,9 +219,9 @@ const Marketplace = () => {
                 <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{it.description}</p>
                 <p className="text-[10px] text-muted-foreground mt-2 uppercase tracking-wide">{it.category}</p>
                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/30">
-                  <a href={`mailto:${it.sellerEmail}`} className="text-xs text-primary flex items-center gap-1 hover:underline">
-                    <Mail className="h-3 w-3" /> Contact
-                  </a>
+                  <button onClick={() => openChatWith(it.sellerId)} className="text-xs text-primary flex items-center gap-1 hover:underline">
+                    <MessageSquare className="h-3 w-3" /> Chat
+                  </button>
                   {it.sellerId === uid && (
                     <button onClick={() => remove(it.id)} className="text-destructive hover:opacity-80">
                       <Trash2 className="h-3.5 w-3.5" />
