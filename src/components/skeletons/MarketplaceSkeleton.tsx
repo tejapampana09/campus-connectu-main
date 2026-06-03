@@ -9,7 +9,7 @@ export const MarketplaceSkeleton = () => (
     <div className="flex flex-wrap gap-2 mb-4">
       <SkeletonLoader className="flex-1 min-w-[200px] h-10 rounded-full" />
       <div className="flex gap-1.5 flex-wrap">
-        {[...Array(4)].map((i) => (
+        {[...Array(4)].map((_, i) => (
           <SkeletonLoader key={i} className="h-8 w-16 rounded-full" />
         ))}
       </div>

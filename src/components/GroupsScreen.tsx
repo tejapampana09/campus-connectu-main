@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import {
-  collection, addDoc, doc, getDoc, getDocs, onSnapshot,
-  query, where, orderBy, serverTimestamp, arrayUnion,
+  collection, addDoc, doc, getDoc, onSnapshot,
+  query, where, orderBy, serverTimestamp, arrayUnion, setDoc, updateDoc
 } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,8 +32,8 @@ interface Friend {
 }
 
 const GroupsScreen = () => {
-  const { user } = useAuth();
-  const userId = user!.uid;
+  const { user, loading } = useAuth();
+  const userId = user?.uid;
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -44,8 +44,26 @@ const GroupsScreen = () => {
   const [showInvite, setShowInvite] = useState(false);
   const [friends, setFriends] = useState<Friend[]>([]);
 
+  // Profile Cache to prevent N+1 queries
+  const profileCache = useRef<Record<string, { email: string }>>({});
+
+  const fetchProfile = async (uid: string) => {
+    if (profileCache.current[uid]) return profileCache.current[uid];
+    try {
+      const uDoc = await getDoc(doc(db, "users", uid));
+      if (uDoc.exists()) {
+        const data = uDoc.data();
+        const profile = { email: data?.email || "Campus peer" };
+        profileCache.current[uid] = profile;
+        return profile;
+      }
+    } catch {}
+    return { email: "Campus peer" };
+  };
+
   // Load groups
   useEffect(() => {
+    if (!userId) return;
     const q = query(collection(db, "groups"), where("members", "array-contains", userId));
     const unsub = onSnapshot(q, (snap) => {
       setGroups(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Group)));
@@ -53,20 +71,27 @@ const GroupsScreen = () => {
     return () => unsub();
   }, [userId]);
 
+  // Sync active group to receive membership changes immediately
+  useEffect(() => {
+    if (activeGroup) {
+      const updated = groups.find((g) => g.id === activeGroup.id);
+      if (updated) {
+        setActiveGroup(updated);
+      }
+    }
+  }, [groups]);
+
   // Load friends for invite
   useEffect(() => {
+    if (!userId) return;
     const q = query(collection(db, "friends"), where("users", "array-contains", userId));
     const unsub = onSnapshot(q, async (snap) => {
       const frs: Friend[] = [];
       for (const d of snap.docs) {
         const data = d.data();
         const friendId = data.users.find((u: string) => u !== userId);
-        let email = "Campus peer";
-        try {
-          const uDoc = await getDoc(doc(db, "users", friendId));
-          email = uDoc.data()?.email || "Campus peer";
-        } catch {}
-        frs.push({ id: d.id, friendId, email });
+        const profile = await fetchProfile(friendId);
+        frs.push({ id: d.id, friendId, email: profile.email });
       }
       setFriends(frs);
     });
@@ -74,6 +99,7 @@ const GroupsScreen = () => {
   }, [userId]);
 
   const createGroup = async () => {
+    if (!userId) return;
     const name = newName.trim();
     if (!name) return;
     await addDoc(collection(db, "groups"), {
@@ -100,11 +126,8 @@ const GroupsScreen = () => {
       const msgs: Msg[] = [];
       for (const d of snap.docs) {
         const data = d.data();
-        let senderEmail = "Peer";
-        try {
-          const uDoc = await getDoc(doc(db, "users", data.sender));
-          senderEmail = uDoc.data()?.email?.split("@")[0] || "Peer";
-        } catch {}
+        const profile = await fetchProfile(data.sender);
+        const senderEmail = profile.email.split("@")[0] || "Peer";
         msgs.push({ id: d.id, sender: data.sender, senderEmail, text: data.text });
       }
       setMessages(msgs);
@@ -113,8 +136,9 @@ const GroupsScreen = () => {
   }, [activeGroup]);
 
   const sendMessage = async () => {
+    if (!userId || !activeGroup) return;
     const text = input.trim();
-    if (!text || !activeGroup) return;
+    if (!text) return;
     if (text.length > 300) return;
     if (containsBadWord(text)) return;
     await addDoc(collection(db, "groups", activeGroup.id, "messages"), {
@@ -126,10 +150,26 @@ const GroupsScreen = () => {
   const inviteFriend = async (friendId: string) => {
     if (!activeGroup) return;
     const groupRef = doc(db, "groups", activeGroup.id);
-    await import("firebase/firestore").then(({ updateDoc, arrayUnion }) => {
-      return updateDoc(groupRef, { members: arrayUnion(friendId) });
+    await updateDoc(groupRef, {
+      members: arrayUnion(friendId)
     });
   };
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-muted-foreground text-center">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!user || !userId) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-4 text-muted-foreground text-center">
+        Please log in to view groups.
+      </div>
+    );
+  }
 
   // Group chat view
   if (activeGroup) {

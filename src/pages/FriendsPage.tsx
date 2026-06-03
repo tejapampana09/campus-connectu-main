@@ -2,8 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { db } from "@/lib/firebase";
 import {
-  addDoc, collection, doc, getDoc, onSnapshot, query, where,
-  serverTimestamp, updateDoc, deleteDoc, getDocs, orderBy,
+  setDoc, collection, doc, getDoc, onSnapshot, query, where,
+  serverTimestamp, deleteDoc, getDocs, orderBy,
 } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,8 +23,8 @@ import type { UserProfile } from "@/types";
 type Tab = "friends" | "requests" | "search";
 
 const FriendsPage = () => {
-  const { user } = useAuth();
-  const uid = user!.uid;
+  const { user, loading } = useAuth();
+  const uid = user?.uid;
   const initialLoadRef = useRef(true);
   const [tab, setTab] = useState<Tab>("friends");
   const [requests, setRequests] = useState<any[]>([]);
@@ -38,22 +38,37 @@ const FriendsPage = () => {
   const [searching, setSearching] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
+  // Profile Cache to prevent N+1 Firestore reads
+  const profileCache = useRef<Record<string, { email: string; name: string }>>({});
+
+  const fetchProfile = async (userId: string) => {
+    if (profileCache.current[userId]) {
+      return profileCache.current[userId];
+    }
+    try {
+      const u = await getDoc(doc(db, "users", userId));
+      if (u.exists()) {
+        const data = u.data();
+        const profile = { email: data?.email || "Peer", name: data?.name || "" };
+        profileCache.current[userId] = profile;
+        return profile;
+      }
+    } catch (e) {
+      logError("FriendsPage.fetchProfile", e);
+    }
+    return { email: "Peer", name: "" };
+  };
+
   // Requests
   useEffect(() => {
+    if (!uid) return;
     const q = query(collection(db, "friendRequests"), where("to", "==", uid), where("status", "==", "pending"));
-    return onSnapshot(q, async (snap) => {
+    const unsub = onSnapshot(q, async (snap) => {
       try {
         const reqs = await Promise.all(snap.docs.map(async (d) => {
           const data = d.data();
-          let email = "Peer", name: string | undefined;
-          try {
-            const u = await getDoc(doc(db, "users", data.from));
-            email = u.data()?.email || "Peer";
-            name = u.data()?.name;
-          } catch (e) {
-            logError("FriendsPage.getRequest", e);
-          }
-          return { id: d.id, from: data.from, email, name };
+          const profile = await fetchProfile(data.from);
+          return { id: d.id, from: data.from, email: profile.email, name: profile.name };
         }));
         setRequests(reqs);
         setInitialLoading(false);
@@ -62,25 +77,20 @@ const FriendsPage = () => {
         setInitialLoading(false);
       }
     });
+    return () => unsub();
   }, [uid]);
 
   // Friends
   useEffect(() => {
+    if (!uid) return;
     const q = query(collection(db, "friends"), where("users", "array-contains", uid));
-    return onSnapshot(q, async (snap) => {
+    const unsub = onSnapshot(q, async (snap) => {
       try {
         const frs = await Promise.all(snap.docs.map(async (d) => {
           const data = d.data();
           const friendId = data.users.find((u: string) => u !== uid);
-          let email = "Peer", name: string | undefined;
-          try {
-            const u = await getDoc(doc(db, "users", friendId));
-            email = u.data()?.email || "Peer";
-            name = u.data()?.name;
-          } catch (e) {
-            logError("FriendsPage.getFriend", e);
-          }
-          return { id: d.id, friendId, email, name };
+          const profile = await fetchProfile(friendId);
+          return { id: d.id, friendId, email: profile.email, name: profile.name };
         }));
         setFriends(frs);
         setInitialLoading(false);
@@ -89,12 +99,23 @@ const FriendsPage = () => {
         setInitialLoading(false);
       }
     });
+    return () => unsub();
   }, [uid]);
 
   const accept = async (r: any) => {
+    if (!uid) return;
     try {
-      await addDoc(collection(db, "friends"), { users: [uid, r.from], createdAt: serverTimestamp() });
-      await updateDoc(doc(db, "friendRequests", r.id), { status: "accepted" });
+      // Deterministic Friendship Document ID to prevent duplicate friendship records
+      const firstId = uid < r.from ? uid : r.from;
+      const secondId = uid > r.from ? uid : r.from;
+      const friendshipId = `${firstId}_${secondId}`;
+
+      await setDoc(doc(db, "friends", friendshipId), {
+        users: [uid, r.from],
+        createdAt: serverTimestamp()
+      }, { merge: true });
+
+      await setDoc(doc(db, "friendRequests", r.id), { status: "accepted" }, { merge: true });
       toast({ title: "Friend added!" });
     } catch (error) {
       logError("FriendsPage.accept", error);
@@ -113,10 +134,41 @@ const FriendsPage = () => {
   };
 
   const sendFriendRequest = async (toId: string) => {
+    if (!uid) return;
     try {
-      await addDoc(collection(db, "friendRequests"), {
-        from: uid, to: toId, status: "pending", createdAt: serverTimestamp(),
-      });
+      // Check if already friends
+      const firstId = uid < toId ? uid : toId;
+      const secondId = uid > toId ? uid : toId;
+      const friendshipId = `${firstId}_${secondId}`;
+
+      const friendshipSnap = await getDoc(doc(db, "friends", friendshipId));
+      if (friendshipSnap.exists()) {
+        toast({ title: "Already friends!" });
+        return;
+      }
+
+      // Check if request is already pending
+      const reqIdOut = `${uid}_${toId}`;
+      const reqIdIn = `${toId}_${uid}`;
+
+      const outSnap = await getDoc(doc(db, "friendRequests", reqIdOut));
+      const inSnap = await getDoc(doc(db, "friendRequests", reqIdIn));
+
+      if (outSnap.exists() || inSnap.exists()) {
+        toast({ title: "Friend request already pending or accepted" });
+        return;
+      }
+
+      await setDoc(
+        doc(db, "friendRequests", reqIdOut),
+        {
+          from: uid,
+          to: toId,
+          status: "pending",
+          createdAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
       toast({ title: "Friend request sent" });
     } catch (error) {
       logError("FriendsPage.sendFriendRequest", error);
@@ -125,7 +177,7 @@ const FriendsPage = () => {
   };
 
   const doSearch = async () => {
-    if (!searchTerm.trim()) {
+    if (!uid || !searchTerm.trim()) {
       setResults([]);
       return;
     }
@@ -139,19 +191,25 @@ const FriendsPage = () => {
   };
 
   const openChat = async (friend: any) => {
+    if (!uid) return;
     setChatFriend(friend);
     setMessages([]);
     try {
-      const snap = await getDocs(query(collection(db, "privateChats"), where("users", "array-contains", uid)));
-      let id: string | null = null;
-      for (const d of snap.docs) {
-        if (d.data().users.includes(friend.friendId)) { id = d.id; break; }
+      // Deterministic private chat ID to avoid duplication
+      const firstId = uid < friend.friendId ? uid : friend.friendId;
+      const secondId = uid > friend.friendId ? uid : friend.friendId;
+      const privateChatId = `${firstId}_${secondId}`;
+
+      const chatDocRef = doc(db, "privateChats", privateChatId);
+      const chatSnap = await getDoc(chatDocRef);
+
+      if (!chatSnap.exists()) {
+        await setDoc(chatDocRef, {
+          users: [uid, friend.friendId],
+          createdAt: serverTimestamp()
+        }, { merge: true });
       }
-      if (!id) {
-        const ref = await addDoc(collection(db, "privateChats"), { users: [uid, friend.friendId], createdAt: serverTimestamp() });
-        id = ref.id;
-      }
-      setChatId(id);
+      setChatId(privateChatId);
     } catch (error) {
       logError("FriendsPage.openChat", error);
       toast({ title: "Error", description: formatErrorMessage(error), variant: "destructive" });
@@ -171,13 +229,12 @@ const FriendsPage = () => {
   }, [chatId]);
 
   const send = async () => {
+    if (!uid || !chatId) return;
     const validation = validateMessage(input);
     if (!validation.valid) {
       toast({ title: "Invalid message", description: validation.error, variant: "destructive" });
       return;
     }
-
-    if (!chatId) return;
 
     try {
       const moderation = await checkContent(input);
@@ -195,6 +252,18 @@ const FriendsPage = () => {
       toast({ title: "Failed to send", description: formatErrorMessage(error), variant: "destructive" });
     }
   };
+
+  if (loading) {
+    return <FriendsSkeleton />;
+  }
+
+  if (!user || !uid) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-6 text-muted-foreground text-center">
+        Please log in to view friends.
+      </div>
+    );
+  }
 
   if (initialLoading && initialLoadRef.current) {
     return <FriendsSkeleton />;
@@ -267,7 +336,7 @@ const FriendsPage = () => {
               <div className="grid sm:grid-cols-2 gap-3">
                 {friends.map((f) => (
                   <div key={f.id} className="glass rounded-2xl p-4 flex items-center gap-3">
-                    <img src={avatarUrl(f.friendId)} className="h-11 w-11 rounded-full bg-secondary" alt="" />
+                     <img src={avatarUrl(f.friendId)} className="h-11 w-11 rounded-full bg-secondary" alt="" />
                     <div className="flex-1 min-w-0">
                       <p className="font-medium truncate">{displayName(f.email, f.name)}</p>
                       <p className="text-xs text-muted-foreground truncate">{f.email}</p>
@@ -348,4 +417,3 @@ const FriendsPage = () => {
 };
 
 export default FriendsPage;
-

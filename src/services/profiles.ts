@@ -1,9 +1,9 @@
-import { doc, updateDoc, collection, getDocs, query, where, limit } from "firebase/firestore";
+import { doc, setDoc, collection, getDocs, query, where, limit } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type { UserProfile } from "@/types";
 
 export const updateProfile = (uid: string, data: Partial<UserProfile>) =>
-  updateDoc(doc(db, "users", uid), { ...data });
+  setDoc(doc(db, "users", uid), { ...data }, { merge: true });
 
 export const searchStudents = async (term: string, currentUid: string): Promise<UserProfile[]> => {
   const t = term.trim().toLowerCase();

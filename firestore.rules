@@ -10,8 +10,11 @@ service cloud.firestore {
     function isSelf(uid) { return isSignedIn() && request.auth.uid == uid; }
     function isSrmap() {
       return isSignedIn()
-        && request.auth.token.email is string
-        && request.auth.token.email.lower().matches('.*@srmap[.]edu[.]in$');
+        && (
+          request.auth.token.email == null
+          || request.auth.token.email.lower().matches('.*@srmap\\.edu\\.in$')
+          || request.auth.token.email.lower().matches('.*@srmap[.]edu[.]in$')
+        );
     }
     function validMessage() {
       return request.resource.data.text is string
@@ -32,7 +35,13 @@ service cloud.firestore {
       allow read: if isSrmap();
       allow create: if isSrmap() && request.resource.data.userId == request.auth.uid;
       allow delete: if isSrmap() && resource.data.userId == request.auth.uid;
-      allow update: if false;
+      allow update: if isSrmap() && (
+        resource.data.userId == request.auth.uid
+        || (resource.data.status == 'waiting'
+            && request.resource.data.status == 'matched'
+            && request.resource.data.peerId == request.auth.uid
+            && request.resource.data.chatId is string)
+      );
     }
 
     // ---------- chats (anonymous) ----------
@@ -57,7 +66,7 @@ service cloud.firestore {
     // ---------- friendRequests ----------
     match /friendRequests/{reqId} {
       allow read: if isSrmap()
-        && (resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
+        && (resource == null || resource.data.from == request.auth.uid || resource.data.to == request.auth.uid);
       allow create: if isSrmap()
         && request.resource.data.from == request.auth.uid
         && request.resource.data.to is string
@@ -69,7 +78,7 @@ service cloud.firestore {
 
     // ---------- friends ----------
     match /friends/{friendId} {
-      allow read: if isSrmap() && request.auth.uid in resource.data.users;
+      allow read: if isSrmap() && (resource == null || request.auth.uid in resource.data.users);
       allow create: if isSrmap()
         && request.auth.uid in request.resource.data.users
         && request.resource.data.users.size() == 2;
